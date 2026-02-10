@@ -185,7 +185,7 @@ All pipelines referencing the old connection ID must be updated.
 $token = (az account get-access-token --resource "https://api.fabric.microsoft.com" --query accessToken -o tsv)
 $headers = @{ Authorization = "Bearer $token"; "Content-Type" = "application/json" }
 
-$workspaceId = "9fbb5e82-ea3b-49b1-b7c5-3a3df689dc1f"
+$workspaceId = "<your-workspace-id>"
 $oldConnectionId = "<old-connection-id>"
 $newConnectionId = "<new-connection-id>"
 
@@ -236,7 +236,7 @@ foreach ($pipeline in $items.value) {
 | Resource Group | `rg-fabric-paging-sim` |
 | Function App | `fabric-paging-sim` |
 | Function App URL | `https://fabric-paging-sim.azurewebsites.net` |
-| Fabric Workspace | `ws-paging` (`9fbb5e82-ea3b-49b1-b7c5-3a3df689dc1f`) |
+| Fabric Workspace | `ws-paging` (`<your-workspace-id>`) |
 | Connection Name | `Paging Sim Base admin` |
 | Connection Type | `WebForPipeline` / Anonymous |
 | Pipelines | `pl_paging1`, `pl_paging2` |

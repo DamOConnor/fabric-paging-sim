@@ -3,6 +3,6 @@ __pycache__/
 .venv/
 .python_packages/
 local.settings.json
-.vscode/
+
 tmpclaude-*/
 bicep/main.json
