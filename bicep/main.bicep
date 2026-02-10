@@ -41,6 +41,7 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
     name: storageSku
   }
   properties: {
+    publicNetworkAccess: 'Enabled'
     allowSharedKeyAccess: false
     supportsHttpsTrafficOnly: true
     minimumTlsVersion: 'TLS1_2'
@@ -69,17 +70,46 @@ resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01'
 }
 
 // ---------------------------------------------------------------------------
-// Storage Blob Data Contributor — sufficient for Function App blob access
+// RBAC — identity-based AzureWebJobsStorage requires Owner (blob lease mgmt),
+// plus Queue and Table Contributor roles for the Functions runtime.
 // ---------------------------------------------------------------------------
-var storageBlobDataContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
+var storageBlobDataOwnerRoleId = 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b'
+var storageQueueDataContributorRoleId = '974c5e8b-45b9-4653-ba55-5f855dd0fb88'
+var storageTableDataContributorRoleId = '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3'
 
-resource blobDataContributorRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(storageAccount.id, uami.id, storageBlobDataContributorRoleId)
+resource blobDataOwnerRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageAccount.id, uami.id, storageBlobDataOwnerRoleId)
   scope: storageAccount
   properties: {
     roleDefinitionId: subscriptionResourceId(
       'Microsoft.Authorization/roleDefinitions',
-      storageBlobDataContributorRoleId
+      storageBlobDataOwnerRoleId
+    )
+    principalId: uami.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource queueDataContributorRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageAccount.id, uami.id, storageQueueDataContributorRoleId)
+  scope: storageAccount
+  properties: {
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      storageQueueDataContributorRoleId
+    )
+    principalId: uami.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource tableDataContributorRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageAccount.id, uami.id, storageTableDataContributorRoleId)
+  scope: storageAccount
+  properties: {
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      storageTableDataContributorRoleId
     )
     principalId: uami.properties.principalId
     principalType: 'ServicePrincipal'
@@ -120,6 +150,20 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
     reserved: true
     httpsOnly: true
     functionAppConfig: {
+      deployment: {
+        storage: {
+          type: 'blobContainer'
+          value: '${storageAccount.properties.primaryEndpoints.blob}app-package-${appName}-${uniqueString(resourceGroup().id)}'
+          authentication: {
+            type: 'UserAssignedIdentity'
+            userAssignedIdentityResourceId: uami.id
+          }
+        }
+      }
+      runtime: {
+        name: 'python'
+        version: '3.11'
+      }
       scaleAndConcurrency: {
         maximumInstanceCount: 2
         instanceMemoryMB: 2048
@@ -153,7 +197,9 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
     }
   }
   dependsOn: [
-    blobDataContributorRole // Ensure RBAC is in place before the Function App starts
+    blobDataOwnerRole
+    queueDataContributorRole
+    tableDataContributorRole
   ]
 }
 
