@@ -36,7 +36,7 @@ resource uami 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
 resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: truncatedStorageName
   location: location
-  kind: 'Storage'
+  kind: 'StorageV2'
   sku: {
     name: storageSku
   }
@@ -49,17 +49,37 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
 }
 
 // ---------------------------------------------------------------------------
-// Storage Blob Data Owner — allows the UAMI to manage blobs for the Function
+// Disable soft delete, versioning, and change feed to minimise storage costs
 // ---------------------------------------------------------------------------
-var storageBlobDataOwnerRoleId = 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b'
+resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
+  parent: storageAccount
+  name: 'default'
+  properties: {
+    deleteRetentionPolicy: {
+      enabled: false
+    }
+    containerDeleteRetentionPolicy: {
+      enabled: false
+    }
+    isVersioningEnabled: false
+    changeFeed: {
+      enabled: false
+    }
+  }
+}
 
-resource blobDataOwnerRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(storageAccount.id, uami.id, storageBlobDataOwnerRoleId)
+// ---------------------------------------------------------------------------
+// Storage Blob Data Contributor — sufficient for Function App blob access
+// ---------------------------------------------------------------------------
+var storageBlobDataContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
+
+resource blobDataContributorRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageAccount.id, uami.id, storageBlobDataContributorRoleId)
   scope: storageAccount
   properties: {
     roleDefinitionId: subscriptionResourceId(
       'Microsoft.Authorization/roleDefinitions',
-      storageBlobDataOwnerRoleId
+      storageBlobDataContributorRoleId
     )
     principalId: uami.properties.principalId
     principalType: 'ServicePrincipal'
@@ -99,8 +119,14 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
     serverFarmId: hostingPlan.id
     reserved: true
     httpsOnly: true
+    functionAppConfig: {
+      scaleAndConcurrency: {
+        maximumInstanceCount: 2
+        instanceMemoryMB: 2048
+      }
+    }
     siteConfig: {
-      ftpsState: 'FtpsOnly'
+      ftpsState: 'Disabled'
       minTlsVersion: '1.2'
       appSettings: [
         {
@@ -127,7 +153,7 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
     }
   }
   dependsOn: [
-    blobDataOwnerRole // Ensure RBAC is in place before the Function App starts
+    blobDataContributorRole // Ensure RBAC is in place before the Function App starts
   ]
 }
 
