@@ -5,3 +5,4 @@ __pycache__/
 local.settings.json
 .vscode/
 tmpclaude-*/
+bicep/main.json
