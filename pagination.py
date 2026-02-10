@@ -5,7 +5,7 @@ Each function returns (records, metadata) where metadata varies by strategy.
 import base64
 import json
 import math
-from data_generator import generate_records
+from data_generator import generate_records, generate_bookmark_records
 
 
 def _parse_int(value, default: int) -> int:
@@ -272,5 +272,92 @@ def paginate_cursor(req, base_url: str) -> tuple[dict, int]:
             f"?totalRecords={total_records}&pageSize={page_size}"
             f"&cursor={next_cursor}&delay={delay_ms}"
         )
+
+    return response, delay_ms
+
+
+def _build_bookmark_xml(first_job: int, last_job: int, first_site: str, last_site: str) -> str:
+    """
+    Build an XML bookmark string matching the ERP-style format.
+    Columns: job, suffix, site_ref. Sort: ascending on all.
+    <F> = first row keys, <L> = last row keys.
+    """
+    return (
+        "<B>"
+        "<P><p>job</p><p>suffix</p><p>site_ref</p></P>"
+        "<D><f>false</f><f>false</f><f>false</f></D>"
+        f"<F><v> {first_job}</v><v>0</v><v>{first_site}</v></F>"
+        f"<L><v> {last_job}</v><v>0</v><v>{last_site}</v></L>"
+        "</B>"
+    )
+
+
+def _parse_bookmark_xml(bookmark: str) -> int | None:
+    """
+    Parse the <L> (last) job value from a bookmark XML string
+    to determine where the next page should start.
+    Returns the last job number, or None if parsing fails.
+    """
+    import re
+    # Extract the <L> element's first <v> value (the job number)
+    match = re.search(r"<L><v>\s*(\d+)", bookmark)
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def paginate_bookmark(req, base_url: str) -> tuple[dict, int]:
+    """
+    Bookmark/ERP-style pagination.
+
+    The response includes an XML-encoded Bookmark string and a
+    MoreRowsExist flag. Clients pass the Bookmark value in the
+    next request to continue paging.
+
+    Query params:
+        - totalRecords: total dataset size (default 100)
+        - pageSize: records per page (default 10)
+        - bookmark: XML bookmark from previous response (default: none)
+        - delay: simulated delay in ms (default 0)
+
+    Returns:
+        (response_body, delay_ms)
+    """
+    total_records, page_size, delay_ms = _parse_common_params(req)
+
+    bookmark = req.params.get("bookmark")
+    offset = 0
+
+    if bookmark:
+        # Decode if URL-encoded, then parse
+        from urllib.parse import unquote
+        decoded_bookmark = unquote(bookmark)
+        last_job = _parse_bookmark_xml(decoded_bookmark)
+        if last_job is not None:
+            # Next page starts after the last job in the bookmark
+            offset = last_job  # job IDs are 1-based, so last_job = offset for next page
+
+    records = generate_bookmark_records(offset, page_size, total_records)
+    next_offset = offset + page_size
+    has_more = next_offset < total_records
+
+    # Build bookmark from first and last records in this page
+    if records:
+        first_rec = records[0]
+        last_rec = records[-1]
+        bookmark_xml = _build_bookmark_xml(
+            int(first_rec["job"]), int(last_rec["job"]),
+            first_rec["site_ref"], last_rec["site_ref"]
+        )
+    else:
+        bookmark_xml = ""
+
+    response = {
+        "Items": records,
+        "Bookmark": bookmark_xml,
+        "MoreRowsExist": has_more,
+        "Success": True,
+        "Message": None,
+    }
 
     return response, delay_ms

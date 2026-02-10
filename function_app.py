@@ -10,6 +10,7 @@ Endpoints:
     GET /api/paging/offset     - Offset/Limit query parameter pagination
     GET /api/paging/pagenumber - Page number query parameter pagination
     GET /api/paging/cursor     - Cursor/continuation token pagination
+    GET /api/paging/bookmark   - ERP-style XML bookmark pagination
     GET /api/info              - API info and endpoint documentation
 """
 import json
@@ -23,6 +24,7 @@ from pagination import (
     paginate_offset,
     paginate_page_number,
     paginate_cursor,
+    paginate_bookmark,
 )
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
@@ -128,6 +130,17 @@ def info(req: func.HttpRequest) -> func.HttpResponse:
                     "delay": "Simulated response delay in ms (default: 0, max: 5000)"
                 },
                 "paginationRule": "Body: $.continuationToken → pass as 'cursor' query param in next request"
+            },
+            "bookmark": {
+                "url": f"{base_url}/api/paging/bookmark",
+                "description": "ERP-style XML bookmark pagination (e.g. Sage/Infor SyteLine)",
+                "params": {
+                    "totalRecords": "Total records in dataset (default: 100, max: 10000)",
+                    "pageSize": "Records per page (default: 10, max: 500)",
+                    "bookmark": "XML bookmark string from previous response (default: none)",
+                    "delay": "Simulated response delay in ms (default: 0, max: 5000)"
+                },
+                "paginationRule": "Body: $.Bookmark → pass as 'bookmark' query param; end when $.MoreRowsExist = false"
             }
         },
         "examples": {
@@ -135,7 +148,8 @@ def info(req: func.HttpRequest) -> func.HttpResponse:
             "header_page_2": f"{base_url}/api/paging/header?totalRecords=50&pageSize=10&page=2",
             "offset_with_delay": f"{base_url}/api/paging/offset?totalRecords=100&limit=25&offset=0&delay=500",
             "pagenumber_small": f"{base_url}/api/paging/pagenumber?totalRecords=30&pageSize=10",
-            "cursor_start": f"{base_url}/api/paging/cursor?totalRecords=50&pageSize=10"
+            "cursor_start": f"{base_url}/api/paging/cursor?totalRecords=50&pageSize=10",
+            "bookmark_start": f"{base_url}/api/paging/bookmark?totalRecords=50&pageSize=10"
         }
     }
 
@@ -249,4 +263,27 @@ def paging_cursor(req: func.HttpRequest) -> func.HttpResponse:
         return _json_response(response)
     except Exception as e:
         logging.error(f"Error in cursor pagination: {e}")
+        return _json_response({"error": str(e)}, status_code=500)
+
+
+# ─────────────────────────────────────────────
+# 6. Bookmark (ERP-style) pagination
+# ─────────────────────────────────────────────
+
+@app.route(route="paging/bookmark", methods=["GET"])
+def paging_bookmark(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    ERP-style bookmark pagination.
+    Returns an XML Bookmark string and MoreRowsExist flag.
+    Pass the Bookmark value back as a query parameter to fetch the next page.
+    """
+    logging.info("Bookmark pagination endpoint called")
+    base_url = _get_base_url(req)
+
+    try:
+        response, delay_ms = paginate_bookmark(req, base_url)
+        _apply_delay(delay_ms)
+        return _json_response(response)
+    except Exception as e:
+        logging.error(f"Error in bookmark pagination: {e}")
         return _json_response({"error": str(e)}, status_code=500)

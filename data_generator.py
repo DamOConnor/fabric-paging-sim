@@ -88,3 +88,43 @@ def generate_records(start: int, count: int, total: int, seed: int = 42) -> list
     """
     end = min(start + count, total)
     return [generate_record(i + 1, seed) for i in range(start, end)]
+
+
+SITE_REFS = ["BLGS", "MAIN", "WEST", "EAST", "NRTH"]
+
+JOB_DESCRIPTIONS = [
+    "Foundation works", "Roofing", "Electrical fit-out", "Plumbing installation",
+    "HVAC ducting", "Concrete pour", "Steel erection", "Cladding",
+    "Glazing", "Fire protection", "Flooring", "Painting",
+    "Landscaping", "Demolition", "Site preparation", "Drainage",
+    "Scaffolding", "Waterproofing", "Insulation", "Tiling",
+]
+
+JOB_STATUSES = ["Active", "Planned", "Complete", "On Hold"]
+
+
+def generate_bookmark_record(record_id: int, seed: int = 42) -> dict:
+    """Generate a single deterministic job/work-order record for bookmark pagination."""
+    rng = _seeded_random(record_id, seed)
+    site_ref = rng.choice(SITE_REFS)
+    description = rng.choice(JOB_DESCRIPTIONS)
+    block = rng.choice(["A", "B", "C", "D", "E"])
+    status = rng.choice(JOB_STATUSES)
+    qty_released = round(rng.uniform(50, 500), 2)
+    qty_complete = round(rng.uniform(0, qty_released), 2) if status != "Planned" else 0.00
+
+    return {
+        "job": str(record_id),
+        "suffix": 0,
+        "site_ref": site_ref,
+        "description": f"{description} - Block {block}",
+        "status": status,
+        "qty_released": qty_released,
+        "qty_complete": qty_complete,
+    }
+
+
+def generate_bookmark_records(start: int, count: int, total: int, seed: int = 42) -> list[dict]:
+    """Generate a slice of bookmark-style job records."""
+    end = min(start + count, total)
+    return [generate_bookmark_record(i + 1, seed) for i in range(start, end)]

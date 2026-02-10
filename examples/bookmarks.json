@@ -1,0 +1,35 @@
+{
+  "Items": [
+    {
+      "job": "1",
+      "suffix": 0,
+      "site_ref": "BLGS",
+      "description": "Foundation works - Block A",
+      "status": "Active",
+      "qty_released": 150.00,
+      "qty_complete": 87.00
+    },
+    {
+      "job": "2",
+      "suffix": 0,
+      "site_ref": "BLGS",
+      "description": "Roofing - Block A",
+      "status": "Active",
+      "qty_released": 200.00,
+      "qty_complete": 45.00
+    },
+    {
+      "job": "783",
+      "suffix": 0,
+      "site_ref": "BLGS",
+      "description": "Electrical fit-out - Block C",
+      "status": "Planned",
+      "qty_released": 320.00,
+      "qty_complete": 0.00
+    }
+  ],
+  "Bookmark": "<B><P><p>job</p><p>suffix</p><p>site_ref</p></P><D><f>false</f><f>false</f><f>false</f></D><F><v> 1</v><v>0</v><v>BLGS</v></F><L><v> 783</v><v>0</v><v>BLGS</v></L></B>",
+  "MoreRowsExist": true,
+  "Success": true,
+  "Message": null
+}

@@ -11,6 +11,7 @@ A Python Azure Function app that simulates REST API pagination patterns for test
 | `GET /api/paging/offset` | Offset / Limit query params | `$.nextUrl`, `$.nextOffset` |
 | `GET /api/paging/pagenumber` | Page number query param | `$.pagination.nextPageUrl` |
 | `GET /api/paging/cursor` | Cursor / continuation token | `$.continuationToken` |
+| `GET /api/paging/bookmark` | ERP-style XML bookmark | `$.Bookmark`, `$.MoreRowsExist` |
 | `GET /api/info` | API documentation | — |
 
 ## Common Query Parameters
@@ -62,6 +63,9 @@ curl http://localhost:7071/api/paging/offset?totalRecords=100&limit=25&offset=0&
 # Start cursor-based pagination
 curl http://localhost:7071/api/paging/cursor?totalRecords=50&pageSize=10
 
+# Start bookmark-style pagination
+curl http://localhost:7071/api/paging/bookmark?totalRecords=50&pageSize=10
+
 # API documentation
 curl http://localhost:7071/api/info
 ```
@@ -91,6 +95,11 @@ In your Copy Activity **Source** settings:
 - **Pagination rules**:
   - `QueryParameters.cursor` = `$.continuationToken`
   - End condition: `$.hasMore` = `false`
+
+### 6. Bookmark (ERP-style) Pattern
+- **Pagination rules**:
+  - `QueryParameters.bookmark` = `$.Bookmark`
+  - End condition: `$.MoreRowsExist` = `false`
 
 ## Example Responses
 
