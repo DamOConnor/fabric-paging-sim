@@ -11,6 +11,7 @@ Endpoints:
     GET /api/paging/pagenumber - Page number query parameter pagination
     GET /api/paging/cursor     - Cursor/continuation token pagination
     GET /api/paging/bookmark   - ERP-style XML bookmark pagination
+    GET /api/paging/range      - Range query parameter pagination (e.g. ?range=0-99)
     GET /api/info              - API info and endpoint documentation
 """
 import json
@@ -25,6 +26,7 @@ from pagination import (
     paginate_page_number,
     paginate_cursor,
     paginate_bookmark,
+    paginate_range,
 )
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
@@ -141,6 +143,18 @@ def info(req: func.HttpRequest) -> func.HttpResponse:
                     "delay": "Simulated response delay in ms (default: 0, max: 5000)"
                 },
                 "paginationRule": "Body: $.Bookmark → pass as 'bookmark' query param; end when $.MoreRowsExist = false"
+            },
+            "range": {
+                "url": f"{base_url}/api/paging/range",
+                "description": "Range query parameter pagination. Supports ?range=0-99 or ?start=0&stop=99",
+                "params": {
+                    "totalRecords": "Total records in dataset (default: 100, max: 10000)",
+                    "range": "Start-Stop inclusive range, e.g. '0-99' (default: '0-9')",
+                    "start": "Start index, 0-based (alternative to range)",
+                    "stop": "Stop index, inclusive (alternative to range)",
+                    "delay": "Simulated response delay in ms (default: 0, max: 5000)"
+                },
+                "paginationRule": "AbsoluteUrl = $.nextUrl, or QueryParameters.range = $.nextRange, or QueryParameters.start = $.nextStart + QueryParameters.stop = $.nextStop"
             }
         },
         "examples": {
@@ -149,7 +163,8 @@ def info(req: func.HttpRequest) -> func.HttpResponse:
             "offset_with_delay": f"{base_url}/api/paging/offset?totalRecords=100&limit=25&offset=0&delay=500",
             "pagenumber_small": f"{base_url}/api/paging/pagenumber?totalRecords=30&pageSize=10",
             "cursor_start": f"{base_url}/api/paging/cursor?totalRecords=50&pageSize=10",
-            "bookmark_start": f"{base_url}/api/paging/bookmark?totalRecords=50&pageSize=10"
+            "bookmark_start": f"{base_url}/api/paging/bookmark?totalRecords=50&pageSize=10",
+            "range_start": f"{base_url}/api/paging/range?totalRecords=100&range=0-24"
         }
     }
 
@@ -286,4 +301,29 @@ def paging_bookmark(req: func.HttpRequest) -> func.HttpResponse:
         return _json_response(response)
     except Exception as e:
         logging.error(f"Error in bookmark pagination: {e}")
+        return _json_response({"error": str(e)}, status_code=500)
+
+
+# ─────────────────────────────────────────────
+# 7. Range query parameter pagination
+# ─────────────────────────────────────────────
+
+@app.route(route="paging/range", methods=["GET"])
+def paging_range(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Range-based pagination.
+    Supports two URL styles:
+      - Combined: ?range=0-99
+      - Separate: ?start=0&stop=99
+    Returns nextRange, nextStart, nextStop, and nextUrl for fetching the next window.
+    """
+    logging.info("Range pagination endpoint called")
+    base_url = _get_base_url(req)
+
+    try:
+        response, delay_ms = paginate_range(req, base_url)
+        _apply_delay(delay_ms)
+        return _json_response(response)
+    except Exception as e:
+        logging.error(f"Error in range pagination: {e}")
         return _json_response({"error": str(e)}, status_code=500)

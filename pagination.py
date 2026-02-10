@@ -361,3 +361,74 @@ def paginate_bookmark(req, base_url: str) -> tuple[dict, int]:
     }
 
     return response, delay_ms
+
+
+def paginate_range(req, base_url: str) -> tuple[dict, int]:
+    """
+    Range-based pagination.
+
+    Supports two URL styles:
+      1. Combined:  ?range=0-99   (single param with start-stop)
+      2. Separate:  ?start=0&stop=99  (two params)
+
+    If 'start' and 'stop' are provided, they take precedence over 'range'.
+
+    Query params:
+        - totalRecords: total dataset size (default 100)
+        - range: 'start-stop' inclusive range, e.g. '0-99' (default '0-9')
+        - start: start index, 0-based (alternative to range)
+        - stop: stop index, inclusive (alternative to range)
+        - delay: simulated delay in ms (default 0)
+
+    Returns:
+        (response_body, delay_ms)
+    """
+    total_records, _, delay_ms = _parse_common_params(req)
+
+    # Support both ?start=0&stop=99 and ?range=0-99
+    raw_start = req.params.get("start")
+    raw_stop = req.params.get("stop")
+
+    if raw_start is not None and raw_stop is not None:
+        try:
+            range_start = max(0, int(raw_start))
+            range_stop = max(range_start, int(raw_stop))
+        except (ValueError, TypeError):
+            range_start = 0
+            range_stop = 9
+    else:
+        range_param = req.params.get("range", "0-9")
+        try:
+            parts = range_param.split("-")
+            range_start = max(0, int(parts[0]))
+            range_stop = max(range_start, int(parts[1]))
+        except (ValueError, IndexError):
+            range_start = 0
+            range_stop = 9
+
+    page_size = range_stop - range_start + 1
+    records = generate_records(range_start, page_size, total_records)
+    next_start = range_stop + 1
+    has_more = next_start < total_records
+
+    response = {
+        "data": records,
+        "range": f"{range_start}-{range_stop}",
+        "start": range_start,
+        "stop": range_stop,
+        "totalRecords": total_records,
+        "hasMore": has_more,
+    }
+
+    if has_more:
+        next_stop = min(next_start + page_size - 1, total_records - 1)
+        response["nextRange"] = f"{next_start}-{next_stop}"
+        response["nextStart"] = next_start
+        response["nextStop"] = next_stop
+        response["nextUrl"] = (
+            f"{base_url}/api/paging/range"
+            f"?totalRecords={total_records}"
+            f"&range={next_start}-{next_stop}&delay={delay_ms}"
+        )
+
+    return response, delay_ms

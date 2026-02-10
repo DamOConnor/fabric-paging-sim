@@ -12,6 +12,7 @@ A Python Azure Function app that simulates REST API pagination patterns for test
 | `GET /api/paging/pagenumber` | Page number query param | `$.pagination.nextPageUrl` |
 | `GET /api/paging/cursor` | Cursor / continuation token | `$.continuationToken` |
 | `GET /api/paging/bookmark` | ERP-style XML bookmark | `$.Bookmark`, `$.MoreRowsExist` |
+| `GET /api/paging/range` | Range query param (`?range=0-99`) | `$.nextUrl`, `$.nextRange` |
 | `GET /api/info` | API documentation | — |
 
 ## Common Query Parameters
@@ -66,6 +67,9 @@ curl http://localhost:7071/api/paging/cursor?totalRecords=50&pageSize=10
 # Start bookmark-style pagination
 curl http://localhost:7071/api/paging/bookmark?totalRecords=50&pageSize=10
 
+# Range-based pagination (records 0-24)
+curl http://localhost:7071/api/paging/range?totalRecords=100&range=0-24
+
 # API documentation
 curl http://localhost:7071/api/info
 ```
@@ -100,6 +104,12 @@ In your Copy Activity **Source** settings:
 - **Pagination rules**:
   - `QueryParameters.bookmark` = `$.Bookmark`
   - End condition: `$.MoreRowsExist` = `false`
+
+### 7. Range Pattern
+- **Pagination rules** (choose one approach):
+  - `AbsoluteUrl` = `$.nextUrl` (simplest)
+  - `QueryParameters.range` = `$.nextRange` with end condition `$.hasMore` = `false`
+  - `QueryParameters.start` = `$.nextStart` + `QueryParameters.stop` = `$.nextStop` with end condition `$.hasMore` = `false`
 
 ## Example Responses
 
