@@ -5,6 +5,9 @@ Each function returns (records, metadata) where metadata varies by strategy.
 import base64
 import json
 import math
+from dataclasses import dataclass, field
+from typing import Any, Callable, Mapping
+
 from data_generator import generate_records, generate_bookmark_records
 
 
@@ -573,3 +576,176 @@ def paginate_pagemeta(req, base_url: str) -> tuple[dict, int]:
             "total": total_records,
         },
     }, delay_ms
+
+
+# ---------------------------------------------------------------------------
+# Strategy registry
+#
+# Each pagination strategy is declared once here. The HTTP layer
+# (function_app.py) and the /api/info endpoint both derive their behaviour
+# from this list, so adding a new strategy means:
+#   1. Write a `paginate_xxx(req, base_url)` function above.
+#   2. Append a Strategy(...) entry here.
+# No changes to function_app.py are required.
+# ---------------------------------------------------------------------------
+
+
+PaginationResult = tuple[dict, int] | tuple[dict, Mapping[str, str], int]
+
+
+@dataclass(frozen=True)
+class Strategy:
+    """Metadata + callable for a single pagination strategy."""
+
+    name: str                                     # short key, e.g. "nextlink"
+    route: str                                    # Functions route, e.g. "paging/nextlink"
+    handler: Callable[[Any, str], PaginationResult]
+    description: str
+    params: Mapping[str, str] = field(default_factory=dict)
+    pagination_rule: str = ""
+    example_query: str = ""                       # query string incl. leading '?'
+    returns_headers: bool = False                 # True for strategies like 'header'
+
+    def invoke(self, req: Any, base_url: str) -> tuple[dict, int, Mapping[str, str]]:
+        """Call the handler and normalise to (body, delay_ms, headers)."""
+        result = self.handler(req, base_url)
+        if self.returns_headers:
+            body, headers, delay_ms = result
+        else:
+            body, delay_ms = result
+            headers = {}
+        return body, delay_ms, headers
+
+
+_COMMON_PARAMS = {
+    "totalRecords": "Total records in dataset (default: 100, max: 10000)",
+    "pageSize": "Records per page (default: 10, max: 500)",
+    "delay": "Simulated response delay in ms (default: 0, max: 5000)",
+}
+
+
+STRATEGIES: list[Strategy] = [
+    Strategy(
+        name="nextlink",
+        route="paging/nextlink",
+        handler=paginate_nextlink,
+        description="OData-style pagination with @odata.nextLink in response body",
+        params={
+            **_COMMON_PARAMS,
+            "$skip": "Number of records to skip (default: 0)",
+        },
+        pagination_rule="Body: $.@odata.nextLink \u2192 use as absolute URL for next request",
+        example_query="?totalRecords=50&pageSize=10",
+    ),
+    Strategy(
+        name="header",
+        route="paging/header",
+        handler=paginate_header,
+        returns_headers=True,
+        description="Link header pagination with rel='next' (RFC 5988)",
+        params={
+            **_COMMON_PARAMS,
+            "page": "Current page number (default: 1)",
+        },
+        pagination_rule="Header: Link \u2192 parse rel='next' URL",
+        example_query="?totalRecords=50&pageSize=10&page=2",
+    ),
+    Strategy(
+        name="offset",
+        route="paging/offset",
+        handler=paginate_offset,
+        description="Offset/Limit query parameter pagination",
+        params={
+            "totalRecords": _COMMON_PARAMS["totalRecords"],
+            "limit": "Records per page (default: 10, max: 500)",
+            "offset": "Starting record offset, 0-based (default: 0)",
+            "delay": _COMMON_PARAMS["delay"],
+        },
+        pagination_rule="Body: $.nextUrl \u2192 use as absolute URL, or increment offset by limit",
+        example_query="?totalRecords=100&limit=25&offset=0",
+    ),
+    Strategy(
+        name="pagenumber",
+        route="paging/pagenumber",
+        handler=paginate_page_number,
+        description="Page number query parameter pagination",
+        params={
+            **_COMMON_PARAMS,
+            "page": "Current page number (default: 1)",
+        },
+        pagination_rule="Body: $.pagination.nextPageUrl \u2192 use as absolute URL, or increment page",
+        example_query="?totalRecords=30&pageSize=10",
+    ),
+    Strategy(
+        name="cursor",
+        route="paging/cursor",
+        handler=paginate_cursor,
+        description="Cursor/continuation token pagination",
+        params={
+            **_COMMON_PARAMS,
+            "cursor": "Continuation token from previous response (default: none)",
+        },
+        pagination_rule="Body: $.continuationToken \u2192 pass as 'cursor' query param in next request",
+        example_query="?totalRecords=50&pageSize=10",
+    ),
+    Strategy(
+        name="bookmark",
+        route="paging/bookmark",
+        handler=paginate_bookmark,
+        description="ERP-style XML bookmark pagination (e.g. Sage/Infor SyteLine)",
+        params={
+            **_COMMON_PARAMS,
+            "bookmark": "XML bookmark string from previous response (default: none)",
+        },
+        pagination_rule="Body: $.Bookmark \u2192 pass as 'bookmark' query param; end when $.MoreRowsExist = false",
+        example_query="?totalRecords=50&pageSize=10",
+    ),
+    Strategy(
+        name="range",
+        route="paging/range",
+        handler=paginate_range,
+        description="Range query parameter pagination. Supports ?range=0-99 or ?start=0&stop=99",
+        params={
+            "totalRecords": _COMMON_PARAMS["totalRecords"],
+            "range": "Start-Stop inclusive range, e.g. '0-99' (default: '0-9')",
+            "start": "Start index, 0-based (alternative to range)",
+            "stop": "Stop index, inclusive (alternative to range)",
+            "delay": _COMMON_PARAMS["delay"],
+        },
+        pagination_rule=(
+            "AbsoluteUrl = $.nextUrl, or QueryParameters.range = $.nextRange, "
+            "or QueryParameters.start = $.nextStart + QueryParameters.stop = $.nextStop"
+        ),
+        example_query="?totalRecords=100&range=0-24",
+    ),
+    Strategy(
+        name="pagemeta",
+        route="paging/pagemeta",
+        handler=paginate_pagemeta,
+        description=(
+            "Page-number pagination with {data, metadata:{page,size,total}} shape. "
+            "Simulates poorly-behaved APIs that expose total but lack hasNext/nextUrl "
+            "and can misbehave on overflow. Use 'overflow' to pick the bad behaviour."
+        ),
+        params={
+            **_COMMON_PARAMS,
+            "page": "1-based page number (default: 1)",
+            "overflow": (
+                "Behaviour when page > ceil(total/size). One of: "
+                "'error' (HTTP 500 fake 'Invalid URL' \u2014 repros the SO scenario), "
+                "'empty' (HTTP 200 with data:[]), "
+                "'clamp' (silently returns last valid page), "
+                "'notfound' (HTTP 404). Default: 'error'."
+            ),
+        },
+        pagination_rule=(
+            "No nextLink. Use QueryParameters.page = RANGE:1:N with "
+            "EndCondition:$.data = Empty (requires overflow=empty), or "
+            "Lookup + compute maxPage = ceil(total/size) + MaxRequestNumber."
+        ),
+        example_query="?totalRecords=10&pageSize=3&page=1",
+    ),
+]
+
+
+STRATEGY_BY_NAME: dict[str, Strategy] = {s.name: s for s in STRATEGIES}

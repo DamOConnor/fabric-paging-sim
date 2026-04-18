@@ -50,6 +50,22 @@ func start
 
 The API will be available at `http://localhost:7071`.
 
+## Running Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+## Adding a New Pagination Strategy
+
+The HTTP layer is driven by the `STRATEGIES` registry in [pagination.py](pagination.py). To add a 9th endpoint:
+
+1. Write `paginate_myNewThing(req, base_url) -> (body, delay_ms)` in `pagination.py`.
+2. Append a `Strategy(...)` entry to `STRATEGIES`.
+
+The route, error handling, and `/api/info` documentation are generated automatically. No edits to `function_app.py` required.
+
 ## Example Requests
 
 ```bash
@@ -222,11 +238,14 @@ func azure functionapp publish fabric-paging-sim
 
 ```
 fabric-paging-sim/
-├── function_app.py       # HTTP trigger endpoints
-├── pagination.py         # 8 pagination strategy implementations
+├── function_app.py       # HTTP layer: generic handler + /api/info (driven by registry)
+├── pagination.py         # 8 pagination strategies + Strategy registry
 ├── data_generator.py     # Deterministic fake record generator
 ├── host.json             # Azure Functions host config
-├── requirements.txt      # Python dependencies
+├── requirements.txt      # Python runtime dependencies
+├── requirements-dev.txt  # pytest
+├── pytest.ini            # pytest config
+├── tests/                # Unit tests (49 tests, pure-Python, no Azure runtime)
 ├── bicep/
 │   ├── main.bicep        # Infrastructure-as-code (Flex Consumption)
 │   └── main.bicepparam   # Default parameters
