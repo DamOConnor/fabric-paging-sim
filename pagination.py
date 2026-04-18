@@ -8,21 +8,57 @@ import math
 from data_generator import generate_records, generate_bookmark_records
 
 
-def _parse_int(value, default: int) -> int:
-    """Safely parse an integer from a query parameter."""
+class PaginationError(ValueError):
+    """Raised when a client supplies invalid pagination input (HTTP 400)."""
+
+
+class PaginationOverflowError(Exception):
+    """
+    Raised when a client requests a page beyond the dataset and the endpoint
+    is configured to simulate a poorly-behaved API.
+
+    Attributes:
+        status_code: HTTP status code to return (e.g. 404, 500).
+        body: JSON-serialisable dict to return as the response body.
+    """
+
+    def __init__(self, status_code: int, body: dict):
+        super().__init__(body.get("error") or f"HTTP {status_code}")
+        self.status_code = status_code
+        self.body = body
+
+
+def _parse_positive_int(value, default: int, name: str) -> int:
+    """Parse a query parameter that must be >= 1. Returns default if absent."""
     if value is None:
         return default
     try:
-        return max(1, int(value))
+        parsed = int(value)
     except (ValueError, TypeError):
+        raise PaginationError(f"'{name}' must be an integer, got '{value}'")
+    if parsed < 1:
+        raise PaginationError(f"'{name}' must be >= 1, got {parsed}")
+    return parsed
+
+
+def _parse_nonneg_int(value, default: int, name: str) -> int:
+    """Parse a query parameter that must be >= 0. Returns default if absent."""
+    if value is None:
         return default
+    try:
+        parsed = int(value)
+    except (ValueError, TypeError):
+        raise PaginationError(f"'{name}' must be an integer, got '{value}'")
+    if parsed < 0:
+        raise PaginationError(f"'{name}' must be >= 0, got {parsed}")
+    return parsed
 
 
 def _parse_common_params(req) -> tuple[int, int, int]:
     """Parse common query parameters: totalRecords, pageSize, delay."""
-    total_records = _parse_int(req.params.get("totalRecords"), 100)
-    page_size = _parse_int(req.params.get("pageSize"), 10)
-    delay_ms = _parse_int(req.params.get("delay"), 0)
+    total_records = _parse_positive_int(req.params.get("totalRecords"), 100, "totalRecords")
+    page_size = _parse_positive_int(req.params.get("pageSize"), 10, "pageSize")
+    delay_ms = _parse_nonneg_int(req.params.get("delay"), 0, "delay")
     # Cap values
     total_records = min(total_records, 10000)
     page_size = min(page_size, 500)
@@ -44,8 +80,7 @@ def paginate_nextlink(req, base_url: str) -> tuple[dict, int]:
         (response_body, delay_ms)
     """
     total_records, page_size, delay_ms = _parse_common_params(req)
-    skip = _parse_int(req.params.get("$skip"), 0)
-    skip = max(0, skip)
+    skip = _parse_nonneg_int(req.params.get("$skip"), 0, "$skip")
 
     records = generate_records(skip, page_size, total_records)
     next_skip = skip + page_size
@@ -77,9 +112,13 @@ def paginate_header(req, base_url: str) -> tuple[dict, dict, int]:
         (response_body, headers_dict, delay_ms)
     """
     total_records, page_size, delay_ms = _parse_common_params(req)
-    page = _parse_int(req.params.get("page"), 1)
-    total_pages = math.ceil(total_records / page_size)
-    page = min(page, total_pages)
+    page = _parse_positive_int(req.params.get("page"), 1, "page")
+    total_pages = max(1, math.ceil(total_records / page_size))
+    if page > total_pages:
+        raise PaginationError(
+            f"'page' {page} exceeds total pages {total_pages} "
+            f"(totalRecords={total_records}, pageSize={page_size})"
+        )
 
     skip = (page - 1) * page_size
     records = generate_records(skip, page_size, total_records)
@@ -142,18 +181,8 @@ def paginate_offset(req, base_url: str) -> tuple[dict, int]:
         (response_body, delay_ms)
     """
     total_records, _, delay_ms = _parse_common_params(req)
-    limit = _parse_int(req.params.get("limit"), 10)
-    limit = min(limit, 500)
-    offset = _parse_int(req.params.get("offset"), 0)
-    offset = max(0, offset - 1) if offset > 0 else 0  # treat as 0-based
-
-    # Re-read offset as raw to handle 0
-    raw_offset = req.params.get("offset")
-    if raw_offset is not None:
-        try:
-            offset = max(0, int(raw_offset))
-        except (ValueError, TypeError):
-            offset = 0
+    limit = min(_parse_positive_int(req.params.get("limit"), 10, "limit"), 500)
+    offset = _parse_nonneg_int(req.params.get("offset"), 0, "offset")
 
     records = generate_records(offset, limit, total_records)
     next_offset = offset + limit
@@ -189,9 +218,13 @@ def paginate_page_number(req, base_url: str) -> tuple[dict, int]:
         (response_body, delay_ms)
     """
     total_records, page_size, delay_ms = _parse_common_params(req)
-    page = _parse_int(req.params.get("page"), 1)
-    total_pages = math.ceil(total_records / page_size)
-    page = min(page, total_pages)
+    page = _parse_positive_int(req.params.get("page"), 1, "page")
+    total_pages = max(1, math.ceil(total_records / page_size))
+    if page > total_pages:
+        raise PaginationError(
+            f"'page' {page} exceeds total pages {total_pages} "
+            f"(totalRecords={total_records}, pageSize={page_size})"
+        )
 
     skip = (page - 1) * page_size
     records = generate_records(skip, page_size, total_records)
@@ -246,9 +279,11 @@ def paginate_cursor(req, base_url: str) -> tuple[dict, int]:
         try:
             decoded = base64.urlsafe_b64decode(cursor).decode("utf-8")
             cursor_data = json.loads(decoded)
-            offset = cursor_data.get("offset", 0)
-        except Exception:
-            offset = 0
+            offset = int(cursor_data.get("offset", 0))
+            if offset < 0:
+                raise ValueError("negative offset in cursor")
+        except Exception as e:
+            raise PaginationError(f"Invalid 'cursor' token: {e}")
 
     records = generate_records(offset, page_size, total_records)
     next_offset = offset + page_size
@@ -263,7 +298,7 @@ def paginate_cursor(req, base_url: str) -> tuple[dict, int]:
 
     if has_more:
         next_cursor_data = json.dumps({"offset": next_offset, "ts": "2025-01-01T00:00:00Z"})
-        next_cursor = base64.urlsafe_b64decode if False else base64.urlsafe_b64encode(
+        next_cursor = base64.urlsafe_b64encode(
             next_cursor_data.encode("utf-8")
         ).decode("utf-8")
         response["continuationToken"] = next_cursor
@@ -333,9 +368,14 @@ def paginate_bookmark(req, base_url: str) -> tuple[dict, int]:
         from urllib.parse import unquote
         decoded_bookmark = unquote(bookmark)
         last_job = _parse_bookmark_xml(decoded_bookmark)
-        if last_job is not None:
-            # Next page starts after the last job in the bookmark
-            offset = last_job  # job IDs are 1-based, so last_job = offset for next page
+        if last_job is None:
+            raise PaginationError(
+                "Invalid 'bookmark' value: could not extract last row key from XML. "
+                "Expected a <B>...<L><v> N</v>...</L></B> structure."
+            )
+        # Next page starts after the last job in the bookmark.
+        # Job IDs are 1-based and contiguous, so last_job == next offset.
+        offset = last_job
 
     records = generate_bookmark_records(offset, page_size, total_records)
     next_offset = offset + page_size
@@ -390,21 +430,26 @@ def paginate_range(req, base_url: str) -> tuple[dict, int]:
     raw_stop = req.params.get("stop")
 
     if raw_start is not None and raw_stop is not None:
-        try:
-            range_start = max(0, int(raw_start))
-            range_stop = max(range_start, int(raw_stop))
-        except (ValueError, TypeError):
-            range_start = 0
-            range_stop = 9
+        range_start = _parse_nonneg_int(raw_start, 0, "start")
+        range_stop = _parse_nonneg_int(raw_stop, 0, "stop")
+        if range_stop < range_start:
+            raise PaginationError(
+                f"'stop' ({range_stop}) must be >= 'start' ({range_start})"
+            )
     else:
         range_param = req.params.get("range", "0-9")
         try:
             parts = range_param.split("-")
-            range_start = max(0, int(parts[0]))
-            range_stop = max(range_start, int(parts[1]))
-        except (ValueError, IndexError):
-            range_start = 0
-            range_stop = 9
+            if len(parts) != 2:
+                raise ValueError("expected 'start-stop' format")
+            range_start = int(parts[0])
+            range_stop = int(parts[1])
+            if range_start < 0 or range_stop < range_start:
+                raise ValueError("start must be >= 0 and stop >= start")
+        except ValueError as e:
+            raise PaginationError(
+                f"Invalid 'range' value '{range_param}': {e}. Expected 'start-stop', e.g. '0-99'."
+            )
 
     page_size = range_stop - range_start + 1
     records = generate_records(range_start, page_size, total_records)
@@ -432,3 +477,99 @@ def paginate_range(req, base_url: str) -> tuple[dict, int]:
         )
 
     return response, delay_ms
+
+
+# Allowed values for the `overflow` query parameter on paginate_pagemeta.
+_PAGEMETA_OVERFLOW_MODES = {"error", "empty", "clamp", "notfound"}
+
+
+def paginate_pagemeta(req, base_url: str) -> tuple[dict, int]:
+    """
+    Page-number pagination that mirrors the real-world API shape:
+
+        {
+          "data": [ ... ],
+          "metadata": { "page": 1, "size": 1000, "total": 3128 }
+        }
+
+    Reproduces the common Fabric/ADF problem where an API exposes `total`
+    in metadata but has no `hasNext`/`nextUrl` field and misbehaves on
+    out-of-range pages (see
+    https://stackoverflow.com/questions/79926567).
+
+    Query params:
+        - totalRecords: total dataset size (default 100)
+        - pageSize:     rows per page; surfaced as metadata.size (default 10)
+        - page:         1-based page number (default 1)
+        - overflow:     behaviour when page > ceil(totalRecords / pageSize).
+                        One of:
+                          * 'error'    -> HTTP 500 with a fake "Invalid URL"
+                                          body (matches the SO scenario).
+                          * 'empty'    -> HTTP 200 with "data": [] and the
+                                          requested page in metadata.
+                          * 'clamp'    -> HTTP 200 returning the last valid
+                                          page (silent — hardest to detect).
+                          * 'notfound' -> HTTP 404 with a structured error.
+                        Default: 'error'.
+        - delay:        simulated delay in ms (default 0)
+
+    Returns:
+        (response_body, delay_ms)
+
+    Raises:
+        PaginationOverflowError when overflow=='error' or overflow=='notfound'
+        and the requested page is out of range.
+    """
+    total_records, page_size, delay_ms = _parse_common_params(req)
+    page = _parse_positive_int(req.params.get("page"), 1, "page")
+
+    overflow_mode = (req.params.get("overflow") or "error").lower()
+    if overflow_mode not in _PAGEMETA_OVERFLOW_MODES:
+        raise PaginationError(
+            f"'overflow' must be one of {sorted(_PAGEMETA_OVERFLOW_MODES)}, "
+            f"got '{overflow_mode}'"
+        )
+
+    total_pages = max(1, math.ceil(total_records / page_size))
+
+    if page > total_pages:
+        if overflow_mode == "error":
+            raise PaginationOverflowError(
+                status_code=500,
+                body={
+                    "error": "Invalid URL",
+                    "message": (
+                        f"Page {page} is out of range. This endpoint simulates "
+                        f"a poorly-behaved API that fails hard on overflow."
+                    ),
+                },
+            )
+        if overflow_mode == "notfound":
+            raise PaginationOverflowError(
+                status_code=404,
+                body={
+                    "error": "Not Found",
+                    "message": (
+                        f"Page {page} exceeds total pages {total_pages} "
+                        f"(totalRecords={total_records}, pageSize={page_size})."
+                    ),
+                },
+            )
+        if overflow_mode == "clamp":
+            page = total_pages
+        # overflow_mode == "empty": fall through with empty data.
+
+    skip = (page - 1) * page_size
+    if skip >= total_records:
+        records = []
+    else:
+        records = generate_records(skip, page_size, total_records)
+
+    return {
+        "data": records,
+        "metadata": {
+            "page": page,
+            "size": page_size,
+            "total": total_records,
+        },
+    }, delay_ms

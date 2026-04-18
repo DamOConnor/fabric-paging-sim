@@ -20,6 +20,8 @@ import logging
 import azure.functions as func
 
 from pagination import (
+    PaginationError,
+    PaginationOverflowError,
     paginate_nextlink,
     paginate_header,
     paginate_offset,
@@ -27,6 +29,7 @@ from pagination import (
     paginate_cursor,
     paginate_bookmark,
     paginate_range,
+    paginate_pagemeta,
 )
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
@@ -76,7 +79,7 @@ def info(req: func.HttpRequest) -> func.HttpResponse:
             "Simulates REST API pagination patterns for testing "
             "Microsoft Fabric Data Pipeline Copy Activity pagination rules."
         ),
-        "version": "1.0.0",
+        "version": "1.2.0",
         "endpoints": {
             "nextlink": {
                 "url": f"{base_url}/api/paging/nextlink",
@@ -155,6 +158,32 @@ def info(req: func.HttpRequest) -> func.HttpResponse:
                     "delay": "Simulated response delay in ms (default: 0, max: 5000)"
                 },
                 "paginationRule": "AbsoluteUrl = $.nextUrl, or QueryParameters.range = $.nextRange, or QueryParameters.start = $.nextStart + QueryParameters.stop = $.nextStop"
+            },
+            "pagemeta": {
+                "url": f"{base_url}/api/paging/pagemeta",
+                "description": (
+                    "Page-number pagination with {data, metadata:{page,size,total}} shape. "
+                    "Simulates poorly-behaved APIs that expose total but lack hasNext/nextUrl "
+                    "and can misbehave on overflow. Use 'overflow' to pick the bad behaviour."
+                ),
+                "params": {
+                    "totalRecords": "Total records in dataset (default: 100, max: 10000)",
+                    "pageSize": "Records per page; surfaced as metadata.size (default: 10, max: 500)",
+                    "page": "1-based page number (default: 1)",
+                    "overflow": (
+                        "Behaviour when page > ceil(total/size). One of: "
+                        "'error' (HTTP 500 fake 'Invalid URL' \u2014 repros the SO scenario), "
+                        "'empty' (HTTP 200 with data:[]), "
+                        "'clamp' (silently returns last valid page), "
+                        "'notfound' (HTTP 404). Default: 'error'."
+                    ),
+                    "delay": "Simulated response delay in ms (default: 0, max: 5000)"
+                },
+                "paginationRule": (
+                    "No nextLink. Use QueryParameters.page = RANGE:1:N with "
+                    "EndCondition:$.data = Empty (requires overflow=empty), or "
+                    "Lookup + compute maxPage = ceil(total/size) + MaxRequestNumber."
+                )
             }
         },
         "examples": {
@@ -164,7 +193,10 @@ def info(req: func.HttpRequest) -> func.HttpResponse:
             "pagenumber_small": f"{base_url}/api/paging/pagenumber?totalRecords=30&pageSize=10",
             "cursor_start": f"{base_url}/api/paging/cursor?totalRecords=50&pageSize=10",
             "bookmark_start": f"{base_url}/api/paging/bookmark?totalRecords=50&pageSize=10",
-            "range_start": f"{base_url}/api/paging/range?totalRecords=100&range=0-24"
+            "range_start": f"{base_url}/api/paging/range?totalRecords=100&range=0-24",
+            "pagemeta_happy": f"{base_url}/api/paging/pagemeta?totalRecords=10&pageSize=3&page=1",
+            "pagemeta_overflow_error": f"{base_url}/api/paging/pagemeta?totalRecords=10&pageSize=3&page=5&overflow=error",
+            "pagemeta_overflow_empty": f"{base_url}/api/paging/pagemeta?totalRecords=10&pageSize=3&page=5&overflow=empty"
         }
     }
 
@@ -188,6 +220,8 @@ def paging_nextlink(req: func.HttpRequest) -> func.HttpResponse:
         response, delay_ms = paginate_nextlink(req, base_url)
         _apply_delay(delay_ms)
         return _json_response(response)
+    except PaginationError as e:
+        return _json_response({"error": str(e)}, status_code=400)
     except Exception as e:
         logging.error(f"Error in nextlink pagination: {e}")
         return _json_response({"error": str(e)}, status_code=500)
@@ -210,6 +244,8 @@ def paging_header(req: func.HttpRequest) -> func.HttpResponse:
         response, headers, delay_ms = paginate_header(req, base_url)
         _apply_delay(delay_ms)
         return _json_response(response, headers=headers)
+    except PaginationError as e:
+        return _json_response({"error": str(e)}, status_code=400)
     except Exception as e:
         logging.error(f"Error in header pagination: {e}")
         return _json_response({"error": str(e)}, status_code=500)
@@ -232,6 +268,8 @@ def paging_offset(req: func.HttpRequest) -> func.HttpResponse:
         response, delay_ms = paginate_offset(req, base_url)
         _apply_delay(delay_ms)
         return _json_response(response)
+    except PaginationError as e:
+        return _json_response({"error": str(e)}, status_code=400)
     except Exception as e:
         logging.error(f"Error in offset pagination: {e}")
         return _json_response({"error": str(e)}, status_code=500)
@@ -254,6 +292,8 @@ def paging_pagenumber(req: func.HttpRequest) -> func.HttpResponse:
         response, delay_ms = paginate_page_number(req, base_url)
         _apply_delay(delay_ms)
         return _json_response(response)
+    except PaginationError as e:
+        return _json_response({"error": str(e)}, status_code=400)
     except Exception as e:
         logging.error(f"Error in page number pagination: {e}")
         return _json_response({"error": str(e)}, status_code=500)
@@ -276,6 +316,8 @@ def paging_cursor(req: func.HttpRequest) -> func.HttpResponse:
         response, delay_ms = paginate_cursor(req, base_url)
         _apply_delay(delay_ms)
         return _json_response(response)
+    except PaginationError as e:
+        return _json_response({"error": str(e)}, status_code=400)
     except Exception as e:
         logging.error(f"Error in cursor pagination: {e}")
         return _json_response({"error": str(e)}, status_code=500)
@@ -299,6 +341,8 @@ def paging_bookmark(req: func.HttpRequest) -> func.HttpResponse:
         response, delay_ms = paginate_bookmark(req, base_url)
         _apply_delay(delay_ms)
         return _json_response(response)
+    except PaginationError as e:
+        return _json_response({"error": str(e)}, status_code=400)
     except Exception as e:
         logging.error(f"Error in bookmark pagination: {e}")
         return _json_response({"error": str(e)}, status_code=500)
@@ -324,6 +368,41 @@ def paging_range(req: func.HttpRequest) -> func.HttpResponse:
         response, delay_ms = paginate_range(req, base_url)
         _apply_delay(delay_ms)
         return _json_response(response)
+    except PaginationError as e:
+        return _json_response({"error": str(e)}, status_code=400)
     except Exception as e:
         logging.error(f"Error in range pagination: {e}")
+        return _json_response({"error": str(e)}, status_code=500)
+
+
+# ─────────────────────────────────────────────
+# 8. Page-meta pagination (SO-style: {data, metadata:{page,size,total}})
+# ─────────────────────────────────────────────
+
+@app.route(route="paging/pagemeta", methods=["GET"])
+def paging_pagemeta(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Page-number pagination with the real-world shape:
+        { "data": [...], "metadata": { "page", "size", "total" } }
+
+    Use the 'overflow' query param to control behaviour when the requested
+    page exceeds ceil(totalRecords/pageSize):
+      - error    : HTTP 500 'Invalid URL' (repros the common ADF/Fabric bug)
+      - empty    : HTTP 200 with data:[] (well-behaved)
+      - clamp    : HTTP 200 silently returning the last valid page
+      - notfound : HTTP 404 structured error
+    """
+    logging.info("Pagemeta pagination endpoint called")
+    base_url = _get_base_url(req)
+
+    try:
+        response, delay_ms = paginate_pagemeta(req, base_url)
+        _apply_delay(delay_ms)
+        return _json_response(response)
+    except PaginationOverflowError as e:
+        return _json_response(e.body, status_code=e.status_code)
+    except PaginationError as e:
+        return _json_response({"error": str(e)}, status_code=400)
+    except Exception as e:
+        logging.error(f"Error in pagemeta pagination: {e}")
         return _json_response({"error": str(e)}, status_code=500)

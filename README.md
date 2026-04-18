@@ -13,6 +13,7 @@ A Python Azure Function app that simulates REST API pagination patterns for test
 | `GET /api/paging/cursor` | Cursor / continuation token | `$.continuationToken` |
 | `GET /api/paging/bookmark` | ERP-style XML bookmark | `$.Bookmark`, `$.MoreRowsExist` |
 | `GET /api/paging/range` | Range query param (`?range=0-99`) | `$.nextUrl`, `$.nextRange` |
+| `GET /api/paging/pagemeta` | Page number with `{data, metadata:{page,size,total}}` shape; configurable overflow behaviour | `$.metadata.total`, `$.data` |
 | `GET /api/info` | API documentation | — |
 
 ## Common Query Parameters
@@ -70,6 +71,15 @@ curl http://localhost:7071/api/paging/bookmark?totalRecords=50&pageSize=10
 # Range-based pagination (records 0-24)
 curl http://localhost:7071/api/paging/range?totalRecords=100&range=0-24
 
+# Page-meta (SO-style). 10 records, 3 per page -> 4 pages
+curl http://localhost:7071/api/paging/pagemeta?totalRecords=10&pageSize=3&page=1
+
+# Simulate the broken-API overflow (HTTP 500 'Invalid URL')
+curl -i http://localhost:7071/api/paging/pagemeta?totalRecords=10&pageSize=3&page=5&overflow=error
+
+# Well-behaved variant: empty data on overflow
+curl http://localhost:7071/api/paging/pagemeta?totalRecords=10&pageSize=3&page=5&overflow=empty
+
 # API documentation
 curl http://localhost:7071/api/info
 ```
@@ -110,6 +120,42 @@ In your Copy Activity **Source** settings:
   - `AbsoluteUrl` = `$.nextUrl` (simplest)
   - `QueryParameters.range` = `$.nextRange` with end condition `$.hasMore` = `false`
   - `QueryParameters.start` = `$.nextStart` + `QueryParameters.stop` = `$.nextStop` with end condition `$.hasMore` = `false`
+
+### 8. Page-Meta Pattern (SO-style, no `hasNext` field)
+
+Response shape:
+```json
+{
+  "data": [ /* records */ ],
+  "metadata": { "page": 1, "size": 3, "total": 10 }
+}
+```
+
+This endpoint reproduces the common real-world scenario (see [this Stack Overflow question](https://stackoverflow.com/questions/79926567/pagination-in-azure-data-factory-with-page)) where the API exposes `total` in metadata but provides **no** `hasNext` / `nextUrl` field, and may misbehave on out-of-range pages. Use the `overflow` query parameter to pick the bad behaviour:
+
+| `overflow` | Status | Body on overflow | Use case |
+|---|---|---|---|
+| `error` (default) | 500 | `{"error": "Invalid URL", ...}` | Repros the SO bug |
+| `empty` | 200 | `{"data": [], "metadata": {...}}` | Well-behaved API |
+| `clamp` | 200 | Last valid page (silent) | Hardest to detect |
+| `notfound` | 404 | `{"error": "Not Found", ...}` | Structured end-of-data |
+
+**Fabric Copy Activity strategies:**
+
+- **`overflow=empty`** (easy case): `QueryParameters.page` = `RANGE:1:9999`, end condition `$.data` = `Empty`.
+- **`overflow=error`** (SO scenario — can't be solved by end conditions alone):
+  1. Add a **Lookup** activity calling page 1 to read `$.metadata.total` and `$.metadata.size`.
+  2. **Set Variable** `maxPage` = `@int(div(add(sub(total, 1), size), size))` (ceiling division, or use `divide` + `ceiling`).
+  3. In Copy: `QueryParameters.page` = `RANGE:1:@{variables('maxPage')}`, or set `MaxRequestNumber = @{variables('maxPage')}`.
+- **`overflow=clamp`**: never terminates on end-condition (the data keeps flowing duplicated). You **must** use `MaxRequestNumber` with a computed cap.
+
+Example (your test case — 10 records, page size 3 → 4 valid pages):
+```
+GET /api/paging/pagemeta?totalRecords=10&pageSize=3&page=1    # 3 rows
+GET /api/paging/pagemeta?totalRecords=10&pageSize=3&page=4    # 1 row (last page)
+GET /api/paging/pagemeta?totalRecords=10&pageSize=3&page=5&overflow=error   # HTTP 500
+GET /api/paging/pagemeta?totalRecords=10&pageSize=3&page=5&overflow=empty   # 200, data:[]
+```
 
 ## Example Responses
 
@@ -177,7 +223,7 @@ func azure functionapp publish fabric-paging-sim
 ```
 fabric-paging-sim/
 ├── function_app.py       # HTTP trigger endpoints
-├── pagination.py         # 5 pagination strategy implementations
+├── pagination.py         # 8 pagination strategy implementations
 ├── data_generator.py     # Deterministic fake record generator
 ├── host.json             # Azure Functions host config
 ├── requirements.txt      # Python dependencies
